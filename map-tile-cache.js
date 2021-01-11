@@ -12,7 +12,7 @@
 
 //From: https://developers.cloudflare.com/workers/examples/cache-using-fetch
 async function handleRequest(request) {
-  const url = new URL(request.url)
+  const url = new URL(request.url);
   const path = url.pathname;
   let provider = path.substr(1,path.indexOf("/",1)-1).toLowerCase();
   const pathWithoutProvider = path.substr(provider.length+2);
@@ -48,16 +48,27 @@ async function handleRequest(request) {
 
   //if it's not a valid provider, return a 404 response
   if(!isValidProvider){
-    return new Response("404 - Invalid Provider", { status: 404 })
+    return new Response("404 - provider not found", { status: 404 })
   }
   //if there's no endpointURL, tell us
   if(!baseURL){
-    return new Response(`501 - '${provider}' not configured`, { status: 501 })
+    return new Response(`501 - '${provider}' not implemented`, { status: 501 })
   }
-  //otherwise, make a cached request
-  const fullURL = baseURL + pathWithoutProvider;
+  //otherwise, build a new request that retains the body and headers of the original one
+  //just updating the URL
+  let tempURL = new URL(baseURL+pathWithoutProvider);
+  let newURL = new URL(request.url);
+  newURL.pathname = tempURL.pathname;
+  newURL.host = tempURL.host;
+  newURL.protocol = tempURL.protocol;
 
-  let response = await fetch(new Request(fullURL), {
+  let newRequest = new Request(newURL, {
+    body: request.body,
+    headers: request.headers,
+    method: request.method
+  });
+
+  let response = await fetch(newRequest, {
     cf: {
       // Always cache this fetch regardless of content type
       // for a max of 1 day before revalidating the resource
@@ -69,8 +80,8 @@ async function handleRequest(request) {
   response = new Response(response.body, response)
 
   // Set cache control headers to cache on browser for 1 day
-  response.headers.set("Cache-Control", "max-age=86400")
-  return response
+  response.headers.set("Cache-Control", "max-age=86400");
+  return response;
 }
 
 
