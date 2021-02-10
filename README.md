@@ -2,4 +2,5 @@
 A collection of Cloudflare worker scripts
 
 * **map-tile-cache:** Make requests to map tile services with heavy caching.
+* **on-the-ground:** Combine a response from Mapbox's reverse geocoding and tilequery APIs for a given coordinate in to one response. Includes a simple mode to reduce the data returned.
 * **trigger-netlify-build:** Trigger a Netlify build hook via a GET request. Allows you to change the trigger title.
