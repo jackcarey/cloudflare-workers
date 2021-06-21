@@ -4,7 +4,7 @@ const user = USER;
 const apiKey = API_KEY;
 //https://docs.htmlcsstoimage.com/getting-started/using-the-api#creating-an-image
 const basicAuth = btoa(USER + ":" + API_KEY);
-const cacheSeconds = 86400 * 2;
+let cacheSeconds = 86400 * 2;
 //should terms from themes be combined, or a random one chosen
 const useRandomTerm = true;
 //each theme must have a 'terms' array but the 'suffixes' array is optional
@@ -18,6 +18,7 @@ const themes = {
     "architecture": { "terms": ["architecture"] },
     "interior": { "terms": ["interior", "office"] }
 };
+const fallbackThemes = ["color","tech","texture"];
 
 addEventListener("fetch", (event) => {
     event.respondWith(
@@ -25,17 +26,10 @@ addEventListener("fetch", (event) => {
     );
 });
 
-async function clientCacheResponse(response, seconds = 0) {
-    try {
-        seconds = seconds <= 0 ? cacheSeconds : seconds;
-        response = new Response(response.body, response);
-        response.headers.set("Cache-Control", `max-age=${seconds}`);
-        console.log("changed cache-control to " + response.headers.get("Cache-Control"));
-        return response;
-    } catch (e) {
-        console.log("error setting cache-control: " + e.message);
-        return response;
-    }
+function dateDifference(d1,d2){
+    let max = Math.max(d1,d2);
+    let min = Math.min(d1,d2);
+    return Math.ceil((max - min) / 1000);
 }
 
 async function clearKVItem(key) {
@@ -67,9 +61,72 @@ async function emptyKV() {
     }
 }
 
+async function resetKVDT(key) {
+    if (CAN_RESET_CACHE == "true") {
+        let maxSeconds = 3600;
+        let obj = JSON.parse(await PROFILE_IMAGE.get(key));
+        let dateDiff = obj!=null && obj.dt !=null ? dateDifference(new Date(),obj.dt) : maxSeconds;
+        console.log(`${key} diff: ${dateDiff}`);
+        if(dateDiff >= maxSeconds){
+            obj.dt = new Date(0,0,1);
+            await PROFILE_IMAGE.put(key,JSON.stringify(obj));
+        }
+    }
+}
+
+async function resetKVDatetimes() {
+    if (CAN_RESET_CACHE == "true") {
+        let list = await PROFILE_IMAGE.list();
+        let cursor = "";
+        do {
+            if (list.keys.length > 0) {
+                for (let i = 0; i < list.keys.length; ++i) {
+                    let key = list.keys[i].name;
+                    await resetKVDT(key);
+                }
+
+                if (!list.list_complete) {
+                    cursor = list.cursor;
+                    list = await PROFILE_IMAGE.list({ "cursor": cursor });
+                }
+            }
+        } while (!list.list_complete && list.keys.length > 0);
+        return new Response("cache reset complete");
+    } else {
+        return new Response("cache not reset");
+    }
+}
+
+function formatSeconds(value){
+    //works between 0 and 31 days
+    if(value>2678400){
+        return value + " seconds";
+    }else{
+    let dt = new Date(value*1000);
+    let days = dt.getDate()-1;
+    let hours = dt.getHours();
+    let mins = dt.getMinutes();
+    let seconds = dt.getSeconds();
+    let str = "";
+    if(days>0){
+        str+= days+" days ";
+    }
+    if(hours>0){
+        str += hours+" hours ";
+    }
+    if(mins>0){
+        str+= mins+" mins ";
+    }
+    if(seconds>0){
+        str+=seconds+" seconds";
+    }
+    return str.trim();
+    }
+}
+
 async function deleteHCTIImage(id) {
     if (CAN_DELETE_IMAGES == "true") {
-        if (id) {
+        if (id!=null) {
             if (id != DEFAULT_IMAGE_ID) {
                 const init = {
                     "method": "DELETE",
@@ -90,7 +147,35 @@ async function deleteHCTIImage(id) {
 }
 
 async function listThemes() {
-    return new Response(Object.keys(themes).sort().join());
+    try{
+    let html = `<!DOCTYPE html><title>Profile Image Themes</title><link rel="icon" href="https://jackcarey.co.uk/favicon.ico" /><style>*{text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}</style><body><div>`;
+    let themeNames = Object.keys(themes).sort();
+    for(var i=0;i<themeNames.length;++i){
+        let name = themeNames[i];
+        let stored = await PROFILE_IMAGE.get(name);
+        let age = 0;
+        let objDT = 0;
+        if(stored!=null){
+            let obj = JSON.parse(stored);
+            objDT = new Date(obj.dt);
+            age = dateDifference(new Date(),objDT);
+        }
+        html +="<span>";
+        html += `<a href="/${name}"><img id="img-${name}" src="/${name}?96"><br><b>${name}</b></a>`;
+        html += `<br><i>${formatSeconds(age)} ago</i>`;
+        html+="</span>";
+    }
+    html+= "</div></body>";
+    return new Response(html,{
+    headers: {
+      "content-type": "text/html;charset=UTF-8"
+    }
+    });
+                    }catch(e){
+            console.log(`${e.message}`);
+            console.log(e);
+            return new Response(e.message);
+                    }
 }
 
 async function doesHCTIImageExist(url) {
@@ -108,13 +193,12 @@ async function doesHCTIImageExist(url) {
     return exists;
 }
 
-async function fetchNewHCTI(theme) {
+async function fetchNewHCTI(theme,themeName) {
 
     const HCTI_ERROR = await PROFILE_IMAGE.get("HCTI_ERROR");
     if (HCTI_ERROR == null) {
-
-        //2018 headshot w no bg
-        let fgData = "YOUR_FOREGROUND_SRC";
+        
+        let fgData = "data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>YOUR_FOREGROUND_SRC</text></svg>";
         let w = 1024;
         let h = 1024;
 
@@ -177,7 +261,12 @@ async function fetchNewHCTI(theme) {
         const json = await response.json();
         const jsonErr = Object.keys(json).indexOf("statusCode") != -1 && (json.statusCode >= 300 || json.statusCode < 200);
         if (response.ok && !jsonErr) {
-            return new URL(json["url"] + ".webp");
+            let imageURL = new URL(json["url"] + ".webp");
+            let obj = {};
+                obj.dt = new Date();
+                obj.url = imageURL;
+                await PROFILE_IMAGE.put(themeName, JSON.stringify(obj));
+            return imageURL;
         } else {
             const msg = `${json.error}. Status Code: ${json.statusCode}.${json.message}`;
             await PROFILE_IMAGE.put("HCTI_ERROR", msg, { expirationTtl: 14400 }); //4hrs
@@ -198,21 +287,28 @@ async function fetchNewHCTI(theme) {
  * @returns {Promise<Response>}
  */
 async function handleRequest(request) {
-
+try{
+    //cacheSeconds may be increased in order to reduce the number of requests made to HCTI
+    cacheSeconds = 86400 * (2 + Date.now()%5 );
+    
     const { pathname, search } = new URL(request.url);
 
     const requestedWidth = search && !isNaN(parseInt(search.substr(1))) ? Math.max(32, parseInt(search.substr(1))) : null;
 
-    if (pathname == "/THEMES") {
+    if (pathname.toUpperCase() == "/THEMES") {
         return listThemes();
-    } else if (pathname == "/CLEARCACHE") {
+    } else if (pathname.toUpperCase() == "/CLEARCACHE") {
         return await emptyKV();
-    } else if (pathname.startsWith("/DELETE")) {
-        const deleteID = "";
+        } else if (pathname.toUpperCase() == "/RESETCACHE") {
+        return await resetKVDatetimes();
+    } else if (pathname.toUpperCase().startsWith("/DELETE")) {
+        let deleteID = "";
         try {
-            deleteID = pathname.replace("/DELETE-", "");
-        } catch (e) { } //if the ID can't be parsed, no image will be deleted
-        return deleteHCTIImage(deleteID);
+            deleteID = pathname.toUpperCase().replace("/DELETE-", "");
+            return deleteHCTIImage(deleteID);
+        } catch (e) {
+            return new Response(`Error deleting ID: ${deleteID}`,500);
+        }
     } else {
         if (requestedWidth) {
             defaultImageURL.searchParams.set("width", requestedWidth);
@@ -221,13 +317,15 @@ async function handleRequest(request) {
         //removes any file exts from the url
         let themeName = pathname.substring(1).toLowerCase()
         if (themeName.indexOf(".") != -1) {
-            themeName = themName.replace(new RegExp("\.[0-9A-z]+", "gm"), "");
+            themeName = themeName.replace(new RegExp("\.[0-9A-z]+", "gm"), "");
         }
         const themeNames = Object.keys(themes);
-        //if the theme isn't found, default on tech
+        //if the theme isn't found, default on the first one
         if (themeNames.indexOf(themeName) == -1) {
-            console.log(`${themeName} not found in list ${Object.keys(themes).sort().join()}`);
-            themeName = themeNames[0];
+            console.log(`'${themeName}' not found in list ${Object.keys(themes).sort().join()}`);
+            var options = fallbackThemes || [themeNames[0]];
+            var index = Date.now()%options.length;
+            themeName = options[index];
         }
         console.log("Using theme: " + themeName)
 
@@ -238,28 +336,26 @@ async function handleRequest(request) {
         //the stored object has 'url' and 'dt' keys
         const storedURL = stored && stored.url ? new URL(stored.url) : null;
         const storedDT = stored && stored.dt ? new Date(stored.dt) : null;
-        const storedDiff = stored && storedDT ? Math.ceil((Date.now() - storedDT) / 1000) : -1;
+        const storedDiff = stored && storedDT ? dateDifference(new Date(),storedDT) : -1;
 
         let storedFetchOK = storedURL ? await doesHCTIImageExist(storedURL) : false;
+        let isRecent = storedDiff >= 0 && storedDiff < cacheSeconds;
 
-        console.log(`Stored exists: ${storedFetchOK} ${storedFetchOK ? `Difference: ${storedDiff}` : ""}`);
-
-        if (storedURL && storedDiff >= 0 && storedDiff < cacheSeconds && storedFetchOK) {
-            console.log("Stored URL is recent");
-            if (requestedWidth) {
+        console.log(`Stored URL exists: ${storedFetchOK} Seconds: ${storedDiff}`);
+        console.log(`isRecent: ${isRecent} | ${cacheSeconds}`);
+        
+        if (requestedWidth && storedURL) {
                 storedURL.searchParams.set("width", requestedWidth);
             }
+
+        if (storedURL && isRecent && storedFetchOK) {
+            console.log("Stored URL is recent");
             return Response.redirect(storedURL, 302);
         } else {
             console.log("Fetching new image");
-            //fetch the new image for this theme
-            let imageURL = await fetchNewHCTI(theme);
-
+            //fetch the new image for this theme, or null if there is an issue
+            let imageURL = await fetchNewHCTI(theme,themeName);
             if (imageURL != null) {
-                let obj = {};
-                obj.dt = new Date();
-                obj.url = imageURL;
-                await PROFILE_IMAGE.put(themeName, JSON.stringify(obj));
                 if (requestedWidth) {
                     imageURL.searchParams.set("width", requestedWidth);
                 }
@@ -270,4 +366,9 @@ async function handleRequest(request) {
             }
         }
     }
+                }catch(e){
+            console.log(`${e.message}`);
+            console.log(e);
+            return Response.redirect(defaultImageURL,307);
+        }
 }
