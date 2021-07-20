@@ -1,3 +1,18 @@
+/** Secrets/env. variables must be set up for the CF Worker:
+  - USER: your hcti username
+  - API_KEY: Your hcti API key
+  - CAN_RESET_CACHE: if 'true' the user can reset the dates on cached images. The images will still be used if new ones cannot be fetched
+  - CAN_CLEAR_CACHE: if 'true' the user can remove images from the cache completely
+  You also need to change the following variables:
+  - useRandomTerm (line 20): boolean. should Unsplash use a random term from the chosen theme, or all at once
+  - themes (line 27): A JSON object where each key is the name of a theme path, each value is another object containing "terms" and "suffixes". See the default object for examples.
+  - fallbackThemes (line 36): If no theme is specified for the worker path then one of these themes is chosen
+  - fgData,w,h (line 216): fgData is the img src of your foreground data. w & h are it's original dimensions.
+  To use the images:
+  - navigate to this workers address for a default image. eg: your-worker.example.com/
+  - navigate to a theme path for a specific background. eg: your-worker.example.com/color
+  - add numerical query path to specify the width, make it negative to avoid generating new images.eg: your-worker.example.com/color?100 and your-worker.example.com/color?-100
+*/
 const hctiURL = "https://hcti.io/v1/image";
 let defaultImageURL = new URL(`${hctiURL}/${DEFAULT_IMAGE_ID}.webp`);
 const user = USER;
@@ -148,7 +163,7 @@ async function deleteHCTIImage(id) {
 
 async function listThemes() {
     try{
-    let html = `<!DOCTYPE html><title>Profile Image Themes</title><link rel="icon" href="https://jackcarey.co.uk/favicon.ico" /><style>*{text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}</style><body><div>`;
+    let html = `<!DOCTYPE html><title>Profile Image Themes</title><style>*{text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}</style><body><div>`;
     let themeNames = Object.keys(themes).sort();
     for(var i=0;i<themeNames.length;++i){
         let name = themeNames[i];
