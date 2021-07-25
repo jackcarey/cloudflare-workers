@@ -83,20 +83,20 @@ async function emptyKV() {
     }
 }
 
-async function resetKVDT(key) {
+async function resetKVDT(key,ignoreDT=false) {
     if (CAN_RESET_CACHE == "true") {
         let maxSeconds = 3600;
         let obj = JSON.parse(await PROFILE_IMAGE.get(key));
         let dateDiff = obj != null && obj.dt != null ? dateDifference(new Date(), obj.dt) : maxSeconds;
         console.log(`${key} diff: ${dateDiff}`);
-        if (dateDiff >= maxSeconds) {
+        if (ignoreDT || dateDiff >= maxSeconds) {
             obj.dt = new Date(0, 0, 1);
             await PROFILE_IMAGE.put(key, JSON.stringify(obj));
         }
     }
 }
 
-async function resetKVDatetimes() {
+async function resetKVDatetimes(ignoreDT=false) {
     if (CAN_RESET_CACHE == "true") {
         let list = await PROFILE_IMAGE.list();
         let cursor = "";
@@ -104,7 +104,7 @@ async function resetKVDatetimes() {
             if (list.keys.length > 0) {
                 for (let i = 0; i < list.keys.length; ++i) {
                     let key = list.keys[i].name;
-                    await resetKVDT(key);
+                    await resetKVDT(key,ignoreDT);
                 }
 
                 if (!list.list_complete) {
@@ -113,7 +113,7 @@ async function resetKVDatetimes() {
                 }
             }
         } while (!list.list_complete && list.keys.length > 0);
-        return new Response("cache reset complete");
+        return new Response(`cache reset complete - age ${ignoreDT?"ignored":"considered"}`);
     } else {
         return new Response("cache not reset");
     }
@@ -131,16 +131,16 @@ function formatSeconds(value) {
         let seconds = dt.getSeconds();
         let str = "";
         if (days > 0) {
-            str += days + " days ";
+            str += days + "d ";
         }
         if (hours > 0) {
-            str += hours + " hours ";
+            str += hours + "h ";
         }
         if (mins > 0) {
-            str += mins + " mins ";
+            str += mins + "m ";
         }
         if (seconds > 0) {
-            str += seconds + " seconds";
+            str += seconds + "s ";
         }
         return str.trim();
     }
@@ -170,7 +170,10 @@ async function deleteHCTIImage(id) {
 
 async function listThemes() {
     try {
-        let html = `<!DOCTYPE html><title>Profile Image Themes</title><meta name="viewport" content="width=device-width, initial-scale=1.0"><style>*{text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}</style><body><div>`;
+        const title = `<title>Profile Image Themes</title>`;
+        const meta = `<meta name="viewport" content="width=device-width, initial-scale=1.0">`;
+        const style = `<style>*{background-color:beige;text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}span{margin:0.5em;}</style>`;
+        let html = `<!DOCTYPE html>${title}${meta}${style}<body><div>`;
         let themeNames = Object.keys(themes).sort();
         for (var i = 0; i < themeNames.length; ++i) {
             let name = themeNames[i];
@@ -317,7 +320,8 @@ async function handleRequest(request) {
         } else if (pathname.toUpperCase() == "/CLEARCACHE") {
             return await emptyKV();
         } else if (pathname.toUpperCase() == "/RESETCACHE") {
-            return await resetKVDatetimes();
+            let ignoreDT = search=="?-1";
+            return await resetKVDatetimes(ignoreDT);
         } else if (pathname.toUpperCase().startsWith("/DELETE")) {
             let deleteID = "";
             try {
