@@ -40,7 +40,6 @@ const user = USER;
 const apiKey = API_KEY;
 //https://docs.htmlcsstoimage.com/getting-started/using-the-api#creating-an-image
 const basicAuth = btoa(USER + ":" + API_KEY);
-let cacheSeconds = 86400 * 2;
 
 addEventListener("fetch", (event) => {
     event.respondWith(
@@ -309,18 +308,20 @@ async function fetchNewHCTI(theme, themeName) {
 async function handleRequest(request) {
     try {
         //cacheSeconds may be increased in order to reduce the number of requests made to HCTI
-        cacheSeconds = 86400 * (2 + Date.now() % 5);
+        //min 4 days, max 14 days
+        const cacheSeconds = 86400 * (4 + Date.now() % 11);
 
         const { pathname, search } = new URL(request.url);
 
-        const requestedWidth = search && !isNaN(parseInt(search.substr(1))) ? Math.max(32, parseInt(search.substr(1))) : null;
+        const tempWidth = search && !isNaN(parseInt(search.substr(1))) ? parseInt(search.substr(1)) : null;
+        const ignoreDT = tempWidth < 0;
+        const requestedWidth = Math.max(32,tempWidth<0?-tempWidth:tempWidth);
 
         if (pathname.toUpperCase() == "/THEMES") {
             return listThemes();
         } else if (pathname.toUpperCase() == "/CLEARCACHE") {
             return await emptyKV();
         } else if (pathname.toUpperCase() == "/RESETCACHE") {
-            let ignoreDT = search=="?-1";
             return await resetKVDatetimes(ignoreDT);
         } else if (pathname.toUpperCase().startsWith("/DELETE")) {
             let deleteID = "";
@@ -333,6 +334,13 @@ async function handleRequest(request) {
         } else {
             if (requestedWidth) {
                 defaultImageURL.searchParams.set("width", requestedWidth);
+            }
+            if(FORCE_DEFAULT_IMAGE){
+                return Response.redirect(defaultImageURL,307);
+            }
+            let cached = await caches.default.match(request);
+            if(cached){
+                return cached;
             }
 
             //removes any file exts from the url
@@ -380,9 +388,16 @@ async function handleRequest(request) {
                     if (requestedWidth) {
                         imageURL.searchParams.set("width", requestedWidth);
                     }
-                    return Response.redirect(imageURL, 302);
+                    let imgResponse = await fetch(imageURL);
+                    if(imgResponse.ok){
+                        imgResponse.headers.set("Cache-Control",`s-maxage=${cacheSeconds}`)
+                        event.waitUntil(caches.default.put(request,imgResponse.clone()));
+                        return imgResponse;
+                    }else{
+                        throw new Error("HCTI image fetch error");
+                    }
                 } else {
-                    console.log(`Image creation issue, returning ${storedFetchOK ? "stored" : "default"} URL`);
+                    console.log(`HCTI image creation issue, returning ${storedFetchOK ? "stored" : "default"} URL`);
                     return Response.redirect(storedFetchOK ? storedURL : defaultImageURL, 307);
                 }
             }
