@@ -43,7 +43,7 @@ const basicAuth = btoa(USER + ":" + API_KEY);
 
 addEventListener("fetch", (event) => {
     event.respondWith(
-        handleRequest(event.request)
+        handleEvent(event)
     );
 });
 
@@ -82,28 +82,46 @@ async function emptyKV() {
     }
 }
 
-async function resetKVDT(key,ignoreDT=false) {
+async function resetKVDT(url,key,ignoreDT=false) {
     if (CAN_RESET_CACHE == "true") {
+        try{
         let maxSeconds = 3600;
         let obj = JSON.parse(await PROFILE_IMAGE.get(key));
         let dateDiff = obj != null && obj.dt != null ? dateDifference(new Date(), obj.dt) : maxSeconds;
         console.log(`${key} diff: ${dateDiff}`);
         if (ignoreDT || dateDiff >= maxSeconds) {
             obj.dt = new Date(0, 0, 1);
+            let urlStr = `${url.origin}/${key}`;
+            let cfDelete = await caches.default.delete(new Request(urlStr));
+            console.log(`CF cache delete '${urlStr}': ${cfDelete}`);
             await PROFILE_IMAGE.put(key, JSON.stringify(obj));
+            return cfDelete;
+        }
+        }catch(e){
+            console.log(e.message||e);
+            return false;
         }
     }
 }
 
-async function resetKVDatetimes(ignoreDT=false) {
+async function resetKVDatetimes(url,ignoreDT=false) {
     if (CAN_RESET_CACHE == "true") {
         let list = await PROFILE_IMAGE.list();
         let cursor = "";
+        let resetCount = 0;
+        let failedCount = 0;
         do {
             if (list.keys.length > 0) {
                 for (let i = 0; i < list.keys.length; ++i) {
                     let key = list.keys[i].name;
-                    await resetKVDT(key,ignoreDT);
+                    if(!key.startsWith("CACHED-")){
+                        let wasReset = await resetKVDT(url,key,ignoreDT);
+                        if(wasReset){
+                          ++resetCount;
+                        }else{
+                            ++failedCount;
+                        }
+                    }
                 }
 
                 if (!list.list_complete) {
@@ -112,7 +130,7 @@ async function resetKVDatetimes(ignoreDT=false) {
                 }
             }
         } while (!list.list_complete && list.keys.length > 0);
-        return new Response(`cache reset complete - age ${ignoreDT?"ignored":"considered"}`);
+        return new Response(`cache reset complete - age ${ignoreDT?"ignored":"considered"} | ${resetCount} removed from Cloudflare cache, ${failedCount} not`);
     } else {
         return new Response("cache not reset");
     }
@@ -155,7 +173,9 @@ async function deleteHCTIImage(id) {
                         "Authorization": "Basic " + basicAuth
                     }
                 };
-                return await fetch(hctiURL + "/" + id, init);
+                console.log(`deleting ${id}...`);
+                let response = await fetch(hctiURL + "/" + id, init);
+                return new Response(`delete ${id}: ${response.status} ${response.statusText}`,{status: response.status})
             } else {
                 return new Response("You shouldn't delete the default image")
             }
@@ -171,7 +191,7 @@ async function listThemes() {
     try {
         const title = `<title>Profile Image Themes</title>`;
         const meta = `<meta name="viewport" content="width=device-width, initial-scale=1.0">`;
-        const style = `<style>*{background-color:beige;text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}span{margin:0.5em;}</style>`;
+        const style = `<style>*{background-color:beige;text-align:center;}div{display:flex;justify-content:space-around;flex-wrap:wrap;}span{margin:0.5em;}footer{margin-top:2em;}</style>`;
         let html = `<!DOCTYPE html>${title}${meta}${style}<body><div>`;
         let themeNames = Object.keys(themes).sort();
         for (var i = 0; i < themeNames.length; ++i) {
@@ -179,17 +199,22 @@ async function listThemes() {
             let stored = await PROFILE_IMAGE.get(name);
             let age = 0;
             let objDT = 0;
+            let terms = "";
             if (stored != null) {
                 let obj = JSON.parse(stored);
                 objDT = new Date(obj.dt);
                 age = dateDifference(new Date(), objDT);
+                terms = obj.terms ? decodeURIComponent(obj.terms) : terms;
             }
             html += "<span>";
-            html += `<a href="/${name}"><img id="img-${name}" src="/${name}?96"><br><b>${name}</b></a>`;
+            html += `<a href="/${name}?-${w?w:300}" target="_blank"><img id="img-${name}" src="/${name}?-96"><br><b>${name}</b></a>`;
             html += `<br><i>${formatSeconds(age)} ago</i>`;
+            if(terms.length>0){
+                html+=`<br><i>${terms}</i>`
+            }
             html += "</span>";
         }
-        html += "</div></body>";
+        html += "</div><footer><a href='https://htmlcsstoimage.com/dashboard' target='_blank'>HCTI</a></footer></body>";
         return new Response(html, {
             headers: {
                 "content-type": "text/html;charset=UTF-8"
@@ -220,7 +245,7 @@ async function doesHCTIImageExist(url) {
 async function fetchNewHCTI(theme, themeName) {
 
     const HCTI_ERROR = await PROFILE_IMAGE.get("HCTI_ERROR");
-    if (HCTI_ERROR != null) {
+    if (false&&HCTI_ERROR != null) {
         console.log(`Cooling off. Recent HCTI requests failed: ${HCTI_ERROR}`);
         return null;
     } else {
@@ -287,11 +312,14 @@ async function fetchNewHCTI(theme, themeName) {
             let obj = {};
             obj.dt = new Date();
             obj.url = imageURL;
+            obj.terms = urlTerm;
             await PROFILE_IMAGE.put(themeName, JSON.stringify(obj));
             return imageURL;
         } else {
             const msg = `${json.error}. Status Code: ${json.statusCode}.${json.message}`;
-            await PROFILE_IMAGE.put("HCTI_ERROR", msg, { expirationTtl: 14400 }); //4hrs
+            await PROFILE_IMAGE.put("HCTI_ERROR", msg, {
+                expirationTtl: 28800 // 8hrs
+                });
             console.log(msg);
             return null;
         }
@@ -305,24 +333,25 @@ async function fetchNewHCTI(theme, themeName) {
  * @param {Request} request
  * @returns {Promise<Response>}
  */
-async function handleRequest(request) {
+async function handleEvent(event) {
     try {
+        let request = event.request;
         //cacheSeconds may be increased in order to reduce the number of requests made to HCTI
-        //min 4 days, max 14 days
-        const cacheSeconds = 86400 * (4 + Date.now() % 11);
+        //max = cacheSeconds + 5 days
+        cacheSeconds += 86400 * (Date.now() % 6);
+        const url = new URL(request.url);
+        const { pathname, search } = url;
 
-        const { pathname, search } = new URL(request.url);
-
-        const tempWidth = search && !isNaN(parseInt(search.substr(1))) ? parseInt(search.substr(1)) : null;
-        const ignoreDT = tempWidth < 0;
-        const requestedWidth = Math.max(32,tempWidth<0?-tempWidth:tempWidth);
+        const tempWidth = search && !isNaN(parseInt(search.substr(1))) ? parseInt(search.substr(1)) : w;
+        const ignoreDT = tempWidth && tempWidth < 0;
+        const requestedWidth = Math.max(32,tempWidth<0?tempWidth*-1:tempWidth);
 
         if (pathname.toUpperCase() == "/THEMES") {
             return listThemes();
         } else if (pathname.toUpperCase() == "/CLEARCACHE") {
             return await emptyKV();
         } else if (pathname.toUpperCase() == "/RESETCACHE") {
-            return await resetKVDatetimes(ignoreDT);
+            return await resetKVDatetimes(url,ignoreDT);
         } else if (pathname.toUpperCase().startsWith("/DELETE")) {
             let deleteID = "";
             try {
@@ -335,7 +364,7 @@ async function handleRequest(request) {
             if (requestedWidth) {
                 defaultImageURL.searchParams.set("width", requestedWidth);
             }
-            if(FORCE_DEFAULT_IMAGE){
+            if(FORCE_DEFAULT_IMAGE=="true"){
                 return Response.redirect(defaultImageURL,307);
             }
             let cached = await caches.default.match(request);
@@ -388,8 +417,10 @@ async function handleRequest(request) {
                     if (requestedWidth) {
                         imageURL.searchParams.set("width", requestedWidth);
                     }
-                    let imgResponse = await fetch(imageURL);
+                    let imgResponse = await fetch(imageURL,{ cf: { cacheEverything: true } });
                     if(imgResponse.ok){
+                        console.log("caching image response...")
+                        imgResponse = new Response(imgResponse.body,imgResponse)
                         imgResponse.headers.set("Cache-Control",`s-maxage=${cacheSeconds}`)
                         event.waitUntil(caches.default.put(request,imgResponse.clone()));
                         return imgResponse;
