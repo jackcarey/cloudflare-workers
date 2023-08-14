@@ -11,10 +11,10 @@ export default {
 
     if (!resp) {
       const {hostname, pathname} = url;
-      let str = "";
+      let str = "🌐";
       if(hostname.endsWith("workers.dev")){
         str = "🌤️";
-      }else if(hostname.includes("elepant")){
+      }else if(hostname.includes("elephant")){
         str = "🐘";
       }
       const style = `<style>body{display:flex;justify-content:center;align-items:center;vertical-align:middle;text-align:center;font-size:25vmin;font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol";}</style>`;
