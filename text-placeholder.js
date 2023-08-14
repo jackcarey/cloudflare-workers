@@ -1,6 +1,6 @@
 export default {
   async fetch(request, env,ctx) {
-    const cacheSeconds = 86400; //1 day
+    const cacheSeconds = 30 * 86400; //86400 = 1 day
     const url = new URL(request.url);
     // Construct the cache key from the cache URL
     const cacheKey = new Request(url.toString(), request);
